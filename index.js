@@ -145,8 +145,13 @@ function session(options){
     req.sessionStore = store;
 
     // get the session ID from the cookie
-    var cookieId = req.sessionID = getcookie(req, name, secret);
-
+    var cookieId;
+    if(! req.sessionID) {
+      cookieId = req.sessionID = getcookie(req, name, secret);
+    }
+    else
+      cookieId = req.sessionID
+      
     // set-cookie
     onHeaders(res, function(){
       if (!req.session) {
