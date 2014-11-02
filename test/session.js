@@ -92,6 +92,54 @@ describe('session()', function(){
     })
   })
 
+  it('should pass session fetch error', function (done) {
+    var store = new session.MemoryStore()
+    var server = createServer({ store: store }, function (req, res) {
+      res.end('hello, world')
+    })
+
+    store.get = function destroy(sid, callback) {
+      callback(new Error('boom!'))
+    }
+
+    request(server)
+    .get('/')
+    .expect(200, 'hello, world', function (err, res) {
+      if (err) return done(err)
+      should(sid(res)).not.be.empty
+      request(server)
+      .get('/')
+      .set('Cookie', cookie(res))
+      .expect(500, 'boom!', done)
+    })
+  })
+
+  it('should treat ENOENT session fetch error as not found', function (done) {
+    var count = 0
+    var store = new session.MemoryStore()
+    var server = createServer({ store: store }, function (req, res) {
+      req.session.num = req.session.num || ++count
+      res.end('session ' + req.session.num)
+    })
+
+    store.get = function destroy(sid, callback) {
+      var err = new Error('boom!')
+      err.code = 'ENOENT'
+      callback(err)
+    }
+
+    request(server)
+    .get('/')
+    .expect(200, 'session 1', function (err, res) {
+      if (err) return done(err)
+      should(sid(res)).not.be.empty
+      request(server)
+      .get('/')
+      .set('Cookie', cookie(res))
+      .expect(200, 'session 2', done)
+    })
+  })
+
   it('should create multiple sessions', function (done) {
     var cb = after(2, check)
     var count = 0
@@ -134,6 +182,171 @@ describe('session()', function(){
     .get('/')
     .expect('Content-Type', 'text/plain')
     .expect(200, 'Hello, world!', done);
+  })
+
+  it('should handle res.end(null) calls', function (done) {
+    var server = createServer(null, function (req, res) {
+      res.end(null)
+    })
+
+    request(server)
+    .get('/')
+    .expect(200, '', done)
+  })
+
+  it('should handle reserved properties in storage', function (done) {
+    var count = 0
+    var sid
+    var store = new session.MemoryStore()
+    var server = createServer({ store: store }, function (req, res) {
+      sid = req.session.id
+      req.session.num = req.session.num || ++count
+      res.end('session saved')
+    })
+
+    request(server)
+    .get('/')
+    .expect(200, 'session saved', function (err, res) {
+      if (err) return done(err)
+      store.get(sid, function (err, sess) {
+        if (err) return done(err)
+        // save is reserved
+        sess.save = 'nope'
+        store.set(sid, sess, function (err) {
+          if (err) return done(err)
+          request(server)
+          .get('/')
+          .set('Cookie', cookie(res))
+          .expect(200, 'session saved', done)
+        })
+      })
+    })
+  })
+
+  it('should only have session data enumerable (and cookie)', function (done) {
+    var server = createServer(null, function (req, res) {
+      req.session.test1 = 1
+      req.session.test2 = 'b'
+      res.end(Object.keys(req.session).sort().join(','))
+    })
+
+    request(server)
+    .get('/')
+    .expect(200, 'cookie,test1,test2', done)
+  })
+
+  describe('when response ended', function () {
+    it('should have saved session', function (done) {
+      var saved = false
+      var store = new session.MemoryStore()
+      var server = createServer({ store: store }, function (req, res) {
+        req.session.hit = true
+        res.end('session saved')
+      })
+
+      var _set = store.set
+      store.set = function set(sid, sess, callback) {
+        setTimeout(function () {
+          _set.call(store, sid, sess, function (err) {
+            saved = true
+            callback(err)
+          })
+        }, 200)
+      }
+
+      request(server)
+      .get('/')
+      .expect(200, 'session saved', function (err) {
+        if (err) return done(err)
+        saved.should.be.true
+        done()
+      })
+    })
+
+    it('should have saved session even with empty response', function (done) {
+      var saved = false
+      var store = new session.MemoryStore()
+      var server = createServer({ store: store }, function (req, res) {
+        req.session.hit = true
+        res.setHeader('Content-Length', '0')
+        res.end()
+      })
+
+      var _set = store.set
+      store.set = function set(sid, sess, callback) {
+        setTimeout(function () {
+          _set.call(store, sid, sess, function (err) {
+            saved = true
+            callback(err)
+          })
+        }, 200)
+      }
+
+      request(server)
+      .get('/')
+      .expect(200, '', function (err) {
+        if (err) return done(err)
+        saved.should.be.true
+        done()
+      })
+    })
+
+    it('should have saved session even with multi-write', function (done) {
+      var saved = false
+      var store = new session.MemoryStore()
+      var server = createServer({ store: store }, function (req, res) {
+        req.session.hit = true
+        res.setHeader('Content-Length', '12')
+        res.write('hello, ')
+        res.end('world')
+      })
+
+      var _set = store.set
+      store.set = function set(sid, sess, callback) {
+        setTimeout(function () {
+          _set.call(store, sid, sess, function (err) {
+            saved = true
+            callback(err)
+          })
+        }, 200)
+      }
+
+      request(server)
+      .get('/')
+      .expect(200, 'hello, world', function (err) {
+        if (err) return done(err)
+        saved.should.be.true
+        done()
+      })
+    })
+
+    it('should have saved session even with non-chunked response', function (done) {
+      var saved = false
+      var store = new session.MemoryStore()
+      var server = createServer({ store: store }, function (req, res) {
+        req.session.hit = true
+        res.setHeader('Content-Length', '13')
+        res.end('session saved')
+      })
+
+      var _set = store.set
+      store.set = function set(sid, sess, callback) {
+        setTimeout(function () {
+          _set.call(store, sid, sess, function (err) {
+            saved = true
+            callback(err)
+          })
+        }, 200)
+      }
+
+      request(server)
+      .get('/')
+      .expect(200, 'session saved', function (err) {
+        if (err) return done(err)
+        saved.should.be.true
+        done()
+      })
+    })
   })
 
   describe('when sid not in store', function () {
@@ -282,7 +495,7 @@ describe('session()', function(){
             should(sid(res)).not.equal(val)
             done()
           })
-        }, 10)
+        }, 15)
       })
     })
 
@@ -750,6 +963,27 @@ describe('session()', function(){
       .expect('set-cookie', /connect\.sid=/)
       .expect(200, done);
     });
+
+    it('should pass session save error', function (done) {
+      var cb = after(2, done)
+      var store = new session.MemoryStore()
+      var server = createServer({ store: store, saveUninitialized: true }, function (req, res) {
+        res.end('session saved')
+      })
+
+      store.set = function destroy(sid, sess, callback) {
+        callback(new Error('boom!'))
+      }
+
+      server.on('error', function onerror(err) {
+        err.message.should.equal('boom!')
+        cb()
+      })
+
+      request(server)
+      .get('/')
+      .expect(200, 'session saved', cb)
+    })
   });
 
   describe('unset option', function () {
@@ -844,7 +1078,63 @@ describe('session()', function(){
         });
       });
     });
+
+    it('should pass session destroy error', function (done) {
+      var cb = after(2, done)
+      var store = new session.MemoryStore()
+      var server = createServer({ store: store, unset: 'destroy' }, function (req, res) {
+        req.session = null
+        res.end('session destroyed')
+      })
+
+      store.destroy = function destroy(sid, callback) {
+        callback(new Error('boom!'))
+      }
+
+      server.on('error', function onerror(err) {
+        err.message.should.equal('boom!')
+        cb()
+      })
+
+      request(server)
+      .get('/')
+      .expect(200, 'session destroyed', cb)
+    })
   });
+
+  describe('res.end patch', function () {
+    it('should correctly handle res.end/res.write patched prior', function (done) {
+      var app = express()
+
+      app.use(writePatch())
+      app.use(createSession())
+      app.use(function (req, res) {
+        req.session.hit = true
+        res.write('hello, ')
+        res.end('world')
+      })
+
+      request(app)
+      .get('/')
+      .expect(200, 'hello, world', done)
+    })
+
+    it('should correctly handle res.end/res.write patched after', function (done) {
+      var app = express()
+
+      app.use(createSession())
+      app.use(writePatch())
+      app.use(function (req, res) {
+        req.session.hit = true
+        res.write('hello, ')
+        res.end('world')
+      })
+
+      request(app)
+      .get('/')
+      .expect(200, 'hello, world', done)
+    })
+  })
 
   describe('req.session', function(){
     it('should persist', function(done){
@@ -1036,6 +1326,60 @@ describe('session()', function(){
           .get('/foo')
           .set('Cookie', cookie(res))
           .expect(500, 'failed to load session', done)
+        })
+      })
+    })
+
+    describe('.save()', function () {
+      it('should save session to store', function (done) {
+        var store = new session.MemoryStore()
+        var server = createServer({ store: store }, function (req, res) {
+          req.session.hit = true
+          req.session.save(function (err) {
+            if (err) return res.end(err.message)
+            store.get(req.session.id, function (err, sess) {
+              if (err) return res.end(err.message)
+              res.end(sess ? 'stored' : 'empty')
+            })
+          })
+        })
+
+        request(server)
+        .get('/')
+        .expect(200, 'stored', done)
+      })
+
+      it('should prevent end-of-request save', function (done) {
+        var count = 0
+        var store = new session.MemoryStore()
+        var server = createServer({ store: store }, function (req, res) {
+          req.session.hit = true
+          req.session.save(function (err) {
+            if (err) return res.end(err.message)
+            res.end('saved')
+          })
+        })
+
+        var _set = store.set
+        store.set = function set(sid, sess, callback) {
+          count++
+          _set.call(store, sid, sess, callback)
+        }
+
+        request(server)
+        .get('/')
+        .expect(200, 'saved', function (err, res) {
+          if (err) return done(err)
+          count.should.equal(1)
+          count = 0
+          request(server)
+          .get('/')
+          .set('Cookie', cookie(res))
+          .expect(200, 'saved', function (err) {
+            if (err) return done(err)
+            count.should.equal(1)
+            done()
+          })
         })
       })
     })
@@ -1357,6 +1701,44 @@ describe('session()', function(){
     })
   })
 
+  describe('synchronous store', function(){
+    it('should respond correctly on save', function(done){
+      var store = new SyncStore()
+      var server = createServer({ store: store }, function (req, res) {
+        req.session.count = req.session.count || 0
+        req.session.count++
+        res.end('hits: ' + req.session.count)
+      })
+
+      request(server)
+      .get('/')
+      .expect(200, 'hits: 1', done)
+    })
+
+    it('should respond correctly on destroy', function(done){
+      var store = new SyncStore()
+      var server = createServer({ store: store, unset: 'destroy' }, function (req, res) {
+        req.session.count = req.session.count || 0
+        var count = ++req.session.count
+        if (req.session.count > 1) {
+          req.session = null
+          res.write('destroyed\n')
+        }
+        res.end('hits: ' + count)
+      })
+
+      request(server)
+      .get('/')
+      .expect(200, 'hits: 1', function (err, res) {
+        if (err) return done(err)
+        request(server)
+        .get('/')
+        .set('Cookie', cookie(res))
+        .expect(200, 'destroyed\nhits: 2', done)
+      })
+    })
+  })
+
   describe('cookieParser()', function () {
     it('should read from req.cookies', function(done){
       var app = express()
@@ -1455,7 +1837,30 @@ function cookie(res) {
 }
 
 function createServer(opts, fn) {
-  var app = express()
+  var _session = createSession(opts)
+  var respond = fn || end
+
+  var server = http.createServer(function (req, res) {
+    _session(req, res, function (err) {
+      if (err && !res._header) {
+        res.statusCode = err.status || 500
+        res.end(err.message)
+        return
+      }
+
+      if (err) {
+        server.emit('error', err)
+        return
+      }
+
+      respond(req, res)
+    })
+  })
+
+  return server
+}
+
+function createSession(opts) {
   var options = opts || {}
 
   if (!('cookie' in options)) {
@@ -1466,11 +1871,7 @@ function createServer(opts, fn) {
     options.secret = 'keyboard cat'
   }
 
-  app.set('env', 'test')
-  app.use(session(options))
-  app.use(fn || end)
-
-  return http.createServer(app)
+  return session(options)
 }
 
 function end(req, res) {
@@ -1487,3 +1888,46 @@ function sid(res) {
   var val = match ? match[1] : undefined
   return val
 }
+
+function writePatch() {
+  var ended = false
+  return function addWritePatch(req, res, next) {
+    var _end = res.end
+    var _write = res.write
+
+    res.end = function end() {
+      ended = true
+      return _end.apply(this, arguments)
+    }
+
+    res.write = function write() {
+      if (ended) {
+        throw new Error('write after end')
+      }
+
+      return _write.apply(this, arguments)
+    }
+
+    next()
+  }
+}
+
+function SyncStore() {
+  this.sessions = Object.create(null);
+}
+
+SyncStore.prototype.__proto__ = session.Store.prototype;
+
+SyncStore.prototype.destroy = function destroy(sid, callback) {
+  delete this.sessions[sid];
+  callback();
+};
+
+SyncStore.prototype.get = function get(sid, callback) {
+  callback(null, JSON.parse(this.sessions[sid]));
+};
+
+SyncStore.prototype.set = function set(sid, sess, callback) {
+  this.sessions[sid] = JSON.stringify(sess);
+  callback();
+};
